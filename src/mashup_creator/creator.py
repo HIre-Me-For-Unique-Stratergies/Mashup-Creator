@@ -22,7 +22,7 @@ from . import utils
 class CreationJob:
     video_paths: List[Path]
     audio_path: Path
-    sfx_path: Path
+    sfx_paths: List[Path]
     out_file: Path
     equal_lengths: bool
     render_preset: str
@@ -177,8 +177,11 @@ class Creator:
             self.progress_cb(45)
             self._checkpoint()
 
-            self.status_cb("Adding random SFX hits (10 per video)...")
-            sfx_paths = utils.list_files(c.SFX_DIR, c.AUDIO_EXTS)
+            self.status_cb("Adding random SFX hits...")
+            sfx_paths = [
+                p for p in dict.fromkeys(job.sfx_paths)
+                if p.is_file() and p.suffix.lower() in c.AUDIO_EXTS
+            ]
             if not sfx_paths:
                 raise ValueError("No SFX files found in the library.")
 

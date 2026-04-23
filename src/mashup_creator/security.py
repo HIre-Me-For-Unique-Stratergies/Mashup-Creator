@@ -29,7 +29,7 @@ def _matches_signature(ext: str, head: bytes) -> bool:
     if ext == ".webm":
         return head.startswith(b"\x1A\x45\xDF\xA3")
     if ext == ".mp3":
-        return head.startswith(b"ID3") or head[:2] == b"\xFF\xFB"
+        return head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0)
     if ext == ".wav":
         return head.startswith(b"RIFF") and b"WAVE" in head
     if ext == ".flac":

@@ -35,7 +35,12 @@ class RenderWorker(QtCore.QObject):
 
     @QtCore.pyqtSlot()
     def run(self):
+        last_output = ""
         try:
+            if not self.jobs:
+                self.done.emit("")
+                return
+
             idx = 0
             while True:
                 if self.creator._cancel_event.is_set():
@@ -55,17 +60,19 @@ class RenderWorker(QtCore.QObject):
                 elif len(self.jobs) > 1:
                     self.status.emit(f"Batch {idx + 1}/{len(self.jobs)} starting...")
                 self.creator.create(job)
+                last_output = str(job.out_file)
                 idx += 1
             if self.auto_create and not self.creator._cancel_event.is_set():
                 self.status.emit("Auto create stopped (paused or cancelled).")
             elif len(self.jobs) > 1 and not self.creator._cancel_event.is_set():
                 self.status.emit("Batch complete.")
-            if self.jobs:
-                self.done.emit(str(self.jobs[-1].out_file))
-            else:
-                self.done.emit("")
+            self.done.emit(last_output)
         except Exception as e:
-            self.error.emit(str(e))
+            if str(e) == "Cancelled.":
+                self.status.emit("Cancelled.")
+                self.done.emit(last_output)
+            else:
+                self.error.emit(str(e))
 
     def pause(self):
         self.creator.pause()

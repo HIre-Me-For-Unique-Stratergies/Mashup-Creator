@@ -8,7 +8,7 @@ datas += copy_metadata('imageio_ffmpeg')
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=datas,
     hiddenimports=[],

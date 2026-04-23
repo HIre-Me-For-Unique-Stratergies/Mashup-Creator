@@ -38,6 +38,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.render_start_time = None
         self.rendering = False
         self.cleanup_pending = False
+        self.close_requested = False
 
         self._init_state()
         self._build_ui()
@@ -392,7 +393,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "How to Use",
             "1) Upload videos, audio, and SFX into the library.\n"
-            "2) Select one or more videos (Ctrl/Shift for multi-select).\n"
+            "2) Use Advanced to choose random or sorted library order.\n"
             "3) Click Start to create a 25s short, or Preview 5s.\n"
             "4) Use Advanced for speed, resolution, batch, and audio settings.\n"
             "5) Outputs save to the creations folder.\n"
@@ -441,8 +442,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.epic_mode = bool(data.get("epic_mode", True))
         self._apply_settings_to_ui()
 
-    def _save_settings(self):
+    def _save_settings(self, auto_create: Optional[bool] = None):
         c.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if auto_create is None:
+            auto_create = self.chk_auto.isChecked() if hasattr(self, "chk_auto") else self.auto_create
         data = {
             "equal_lengths": self.equal_lengths,
             "render_speed": self.render_speed,
@@ -454,7 +457,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "duck_volume": self.duck_volume,
             "batch_count": self.batch_count,
             "hw_encode": self.hw_encode,
-            "auto_create": self.auto_create,
+            "auto_create": auto_create,
             "epic_mode": self.epic_mode,
         }
         try:
@@ -575,7 +578,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._log(f"Uploaded {copied} SFX file(s).")
 
-    def _collect_selections(self) -> Tuple[List[Path], Optional[Path], Optional[Path]]:
+    def _collect_selections(self) -> Tuple[List[Path], Optional[Path], List[Path]]:
         all_vids = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
         all_auds = list_files(c.AUDIO_DIR, c.AUDIO_EXTS)
         all_sfxs = list_files(c.SFX_DIR, c.AUDIO_EXTS)
@@ -583,12 +586,14 @@ class MainWindow(QtWidgets.QMainWindow):
         vids = []
         if all_vids:
             pick_count = min(len(all_vids), max(1, self.max_videos))
-            vids = random.sample(all_vids, pick_count)
+            if self.order_mode == "list":
+                vids = all_vids[:pick_count]
+            else:
+                vids = random.sample(all_vids, pick_count)
 
         a = random.choice(all_auds) if all_auds else None
-        s = random.choice(all_sfxs) if all_sfxs else None
 
-        return vids, a, s
+        return vids, a, all_sfxs
 
     def start_creation(self):
         self._start_jobs(preview=False)
@@ -611,13 +616,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.duck_volume = self.spin_duck.value()
         self.batch_count = self.spin_batch.value()
         self.hw_encode = self.chk_hw.isChecked()
-        self.auto_create = (not preview)
-        self.chk_auto.setChecked(self.auto_create)
+        requested_auto_create = self.chk_auto.isChecked()
+        self.auto_create = requested_auto_create and not preview
         self.epic_mode = self.chk_epic.isChecked()
-        self._save_settings()
+        self._save_settings(auto_create=requested_auto_create)
 
-        vids, a, s = self._collect_selections()
-        if not vids or not a or not s:
+        vids, a, sfxs = self._collect_selections()
+        if not vids or not a or not sfxs:
             QtWidgets.QMessageBox.critical(self, "Missing Media", "You need at least one video, one audio, and one SFX in the library.")
             return
 
@@ -625,9 +630,10 @@ class MainWindow(QtWidgets.QMainWindow):
         target_h = 1280 if self.downscale else 1920
         bitrate = "3000k" if self.downscale else "5000k"
         clip_len = 5.0 if preview else 25.0
+        job_count = 1 if preview or self.auto_create else min(5, self.batch_count)
 
         jobs = []
-        for _ in range(1 if preview else min(5, self.batch_count)):
+        for _ in range(job_count):
             stamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S-%f")
             base_name = f"{c.APP_NAME.replace(' ', '_')}_{stamp}.mp4"
             out_file = c.OUTPUTS_DIR / base_name
@@ -638,7 +644,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 CreationJob(
                     video_paths=vids,
                     audio_path=a,
-                    sfx_path=s,
+                    sfx_paths=sfxs,
                     out_file=out_file,
                     equal_lengths=self.equal_lengths,
                     render_preset=self.render_speed,
@@ -659,7 +665,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.last_job_info = {
             "videos_selected": len(vids),
             "audio": a.name,
-            "sfx_count": len(list_files(c.SFX_DIR, c.AUDIO_EXTS)),
+            "sfx_count": len(sfxs),
             "equal_lengths": self.equal_lengths,
             "order_mode": self.order_mode,
             "max_videos": self.max_videos,
@@ -671,6 +677,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "sfx_volume": self.sfx_volume,
             "duck_volume": self.duck_volume,
             "batch_count": len(jobs),
+            "auto_create": self.auto_create,
             "preview": preview,
             "hw_encode": self.hw_encode,
             "epic_mode": self.epic_mode,
@@ -708,7 +715,8 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self.worker_thread.start)
 
     def pause_creation(self):
-        if self.auto_create or (self.batch_count > 1):
+        running_batch = self.worker is not None and len(self.worker.jobs) > 1
+        if self.auto_create or running_batch:
             self.batch_stop_flag.set()
             self.status_label.setText("Pause requested (will stop after current video).")
             self._set_button_state(self.btn_pause, False)
@@ -792,6 +800,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.render_start_time = None
         self.rendering = False
         self.progress.setRange(0, 100)
+        if self.close_requested:
+            self.close_requested = False
+            QtCore.QTimer.singleShot(0, self.close)
 
     def open_latest(self):
         if self.latest_output_file and self.latest_output_file.exists():
@@ -819,6 +830,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._save_settings()
+        if self.worker_thread and self.worker_thread.isRunning():
+            self.close_requested = True
+            if self.worker:
+                self.worker.cancel()
+            self.status_label.setText("Closing after current render step stops...")
+            self._set_button_state(self.btn_start, False)
+            self._set_button_state(self.btn_preview, False)
+            self._set_button_state(self.btn_pause, False)
+            self._set_button_state(self.btn_resume, False)
+            self._set_button_state(self.btn_cancel, False)
+            event.ignore()
+            return
         if self.worker:
             self.worker.cancel()
         event.accept()

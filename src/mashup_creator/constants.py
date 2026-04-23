@@ -3,6 +3,7 @@ from pathlib import Path
 
 APP_NAME = "Mashup Creator"
 
+
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
@@ -10,7 +11,7 @@ def _base_dir() -> Path:
         if (cwd / "library").exists():
             return cwd
         return exe_dir
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _assets_dir() -> Path:

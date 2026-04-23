@@ -2,9 +2,9 @@
 import sys
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from src.app import main
+from mashup_creator.app import main
 
 
 if __name__ == "__main__":

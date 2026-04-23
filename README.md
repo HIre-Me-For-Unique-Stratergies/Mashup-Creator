@@ -15,14 +15,16 @@ random SFX hits across the timeline. Output is vertical (1080x1920 by default).
 ## Folder Structure
 ```
 assets/         App icons and title image
-config/         Settings file
-creations/      Output videos
-edit_bank/      Temporary edit files (auto-cleaned)
-library/
+config/         Runtime settings (created/updated by the app)
+creations/      Runtime output videos
+edit_bank/      Runtime temporary edit files (auto-cleaned)
+library/        Runtime media library
   audio/        Music tracks
   sfx/          Sound effects
   video/        Source videos
-src/            Application code
+src/
+  mashup_creator/
+                Application package
 main.py         Launcher
 ```
 
@@ -51,9 +53,10 @@ python main.py
 
 ## How to Use
 1) Click Upload Video(s), Upload Audio(s), and Upload SFX.
-2) Press Start to generate a 25s short.
-3) Each completed video starts the next automatically.
-4) Output files appear in `creations/`.
+2) Press Preview 5s for a short smoke test, or Start for a 25s short.
+3) Disable Auto create to render only the configured batch count.
+4) Enable Auto create to keep rendering until paused or cancelled.
+5) Output files appear in `creations/`.
 
 ## Settings
 Advanced Settings include:
@@ -83,6 +86,7 @@ Build:
 ```powershell
 pyinstaller --noconfirm --clean --onefile --windowed ^
   --name "Mashup Creator" ^
+  --paths "src" ^
   --icon "assets/icon.ico" ^
   --add-data "assets;assets" ^
   main.py
