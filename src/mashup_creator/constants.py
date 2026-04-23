@@ -36,4 +36,8 @@ EDIT_BANK_DIR = BASE_DIR / "edit_bank"
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 
+MAX_SOURCE_VIDEOS = 5
+MIN_SOURCE_SECONDS = 5 * 60
+MAX_SOURCE_SECONDS = 60 * 60
+
 DIRS = [CONFIG_DIR, VIDEO_DIR, AUDIO_DIR, SFX_DIR, OUTPUTS_DIR, EDIT_BANK_DIR]

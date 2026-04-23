@@ -1,18 +1,11 @@
 import os
 import random
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
-
-from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips
-from moviepy.video.fx.FadeIn import FadeIn
-from moviepy.video.fx.FadeOut import FadeOut
-from moviepy.video.fx.Loop import Loop
-from moviepy.audio.fx.AudioLoop import AudioLoop
-from moviepy.audio.fx.AudioNormalize import AudioNormalize
-from moviepy.audio.fx.MultiplyVolume import MultiplyVolume
+from typing import List, Optional
 
 from . import constants as c
 from . import utils
@@ -21,22 +14,16 @@ from . import utils
 @dataclass
 class CreationJob:
     video_paths: List[Path]
-    audio_path: Path
+    audio_paths: List[Path]
     sfx_paths: List[Path]
     out_file: Path
-    equal_lengths: bool
     render_preset: str
     target_w: int
     target_h: int
     video_bitrate: str
-    order_mode: str
-    max_videos: int
-    min_seg: float
-    sfx_volume: float
-    duck_volume: float
     clip_len: float
     hw_encode: bool
-    epic_mode: bool
+    sfx_volume: float
 
 
 class Creator:
@@ -46,10 +33,11 @@ class Creator:
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._cancel_event = threading.Event()
+        self._process: Optional[subprocess.Popen] = None
 
     def pause(self):
         self._pause_event.clear()
-        self.status_cb("Paused (will pause between steps).")
+        self.status_cb("Paused (will pause before the next render).")
 
     def resume(self):
         self._pause_event.set()
@@ -58,6 +46,11 @@ class Creator:
     def cancel(self):
         self._cancel_event.set()
         self._pause_event.set()
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
         self.status_cb("Cancel requested (will stop as soon as possible).")
 
     def _checkpoint(self):
@@ -70,211 +63,293 @@ class Creator:
 
     def create(self, job: CreationJob) -> None:
         self.progress_cb(0)
-        self.status_cb("Loading media...")
+        self.status_cb("Checking FFmpeg...")
         self._checkpoint()
 
-        clip_len = job.clip_len
-        fade_dur = 0.5
-        target_w = job.target_w
-        target_h = job.target_h
-        video_bitrate = job.video_bitrate
-        min_seg = max(0.5, job.min_seg)
-        max_videos = max(1, job.max_videos)
-        order_mode = job.order_mode
-        sfx_volume = max(0.5, job.sfx_volume)
-        duck_volume = min(1.0, max(0.2, job.duck_volume))
-        codec = "h264_qsv" if job.hw_encode else "libx264"
-
-        segments = []
-        video_clips = []
-        sfx_sources = []
-        stitched_v = None
-        epic_v = None
-        final_v = None
-        a = None
-        final = None
+        ffmpeg = utils.ffmpeg_tool("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg was not found on PATH.")
+        if not utils.ffmpeg_tool("ffprobe"):
+            raise RuntimeError("ffprobe was not found on PATH.")
 
         try:
-            video_paths = list(job.video_paths)
-            if not video_paths:
-                raise ValueError("No video files selected.")
+            video_paths = self._validate_video_sources(job.video_paths)
+            audio_paths = self._valid_audio_paths(job.audio_paths, "song")
+            sfx_paths = self._valid_audio_paths(job.sfx_paths, "SFX")
+            audio_path = random.choice(audio_paths)
 
-            if order_mode == "random":
-                random.shuffle(video_paths)
-
-            if len(video_paths) > max_videos:
-                self.status_cb(f"Using first {max_videos} video(s) based on settings.")
-                video_paths = video_paths[:max_videos]
-
-            if len(video_paths) * min_seg > clip_len:
-                max_count = max(1, int(clip_len // min_seg))
-                self.status_cb(f"Too many videos selected; using first {max_count}.")
-                video_paths = video_paths[:max_count]
-
-            self.status_cb(f"Loading {len(video_paths)} video source(s)...")
-            self._checkpoint()
-
-            valid_paths = [p for p in video_paths if utils.is_video_readable(p)]
-            for p in video_paths:
-                if p not in valid_paths:
-                    self.status_cb(f"Skipped unreadable video: {p.name}")
-            if not valid_paths:
-                raise ValueError("No usable videos found.")
-
-            if job.equal_lengths:
-                seg_len = clip_len / len(valid_paths)
-                seg_lengths = [seg_len] * len(valid_paths)
-            else:
-                weights = [random.random() for _ in valid_paths]
-                total = sum(weights) or 1.0
-                seg_lengths = [max(min_seg, clip_len * w / total) for w in weights]
-                total = sum(seg_lengths)
-                seg_lengths = [d * (clip_len / total) for d in seg_lengths]
-                seg_lengths[-1] = clip_len - sum(seg_lengths[:-1])
-
-            for path, seg_len in zip(valid_paths, seg_lengths):
-                v = VideoFileClip(str(path))
-                video_clips.append(v)
-                if v.duration < 1.0:
-                    raise ValueError(f"Video is too short or invalid: {path.name}")
-                start_v = utils.random_start(v.duration, seg_len)
-                self.status_cb(f"Selected video segment start: {path.name} @ {start_v:.2f}s")
+            self.status_cb("Picking random scenes...")
+            segment_lengths = self._segment_lengths(job.clip_len, len(video_paths))
+            video_segments = []
+            for path, seg_len in zip(video_paths, segment_lengths):
+                duration = utils.probe_duration(path)
+                if duration is None:
+                    raise ValueError(f"Could not read video duration: {path.name}")
+                start = utils.random_start(duration, seg_len)
+                video_segments.append((path, start, seg_len))
+                self.status_cb(f"Scene: {path.name} @ {start:.2f}s for {seg_len:.2f}s")
                 self._checkpoint()
-                seg = v.subclipped(start_v, min(start_v + seg_len, v.duration)).without_audio()
-                if seg.duration < seg_len:
-                    seg = seg.with_effects([Loop(duration=seg_len)])
-                else:
-                    seg = seg.subclipped(0, seg_len)
-                segments.append(seg)
 
-            stitched_v = concatenate_videoclips(segments, method="compose")
-            stitched_v = utils.fit_to_vertical(stitched_v, target_w=target_w, target_h=target_h)
+            audio_duration = utils.probe_duration(audio_path)
+            if audio_duration is None or audio_duration < 1.0:
+                raise ValueError(f"Song is too short or invalid: {audio_path.name}")
+            audio_start = utils.random_start(audio_duration, job.clip_len)
+            self.status_cb(f"Song: {audio_path.name} @ {audio_start:.2f}s")
 
-            if job.epic_mode:
-                epic_v = utils.add_epic_motion(stitched_v, target_w=target_w, target_h=target_h)
-            else:
-                epic_v = stitched_v
-
-            final_v = epic_v.with_effects([FadeIn(fade_dur), FadeOut(fade_dur)])
-            self.progress_cb(25)
+            sfx_hits = self._pick_sfx_hits(sfx_paths, job.clip_len)
+            self.progress_cb(15)
             self._checkpoint()
 
-            self.status_cb("Selecting random audio segment...")
-            a = AudioFileClip(str(job.audio_path))
-            if a.duration < 1.0:
-                raise ValueError("Audio is too short or invalid.")
-            start_a = utils.random_start(a.duration, clip_len)
-            self.status_cb(f"Selected audio segment start: {start_a:.2f}s")
-            self._checkpoint()
-
-            base_a = a.subclipped(start_a, min(start_a + clip_len, a.duration))
-            if base_a.duration < clip_len:
-                base_a = base_a.with_effects([AudioLoop(duration=clip_len)])
-            else:
-                base_a = base_a.subclipped(0, clip_len)
-            base_a = base_a.with_effects([AudioNormalize()])
-
-            self.progress_cb(45)
-            self._checkpoint()
-
-            self.status_cb("Adding random SFX hits...")
-            sfx_paths = [
-                p for p in dict.fromkeys(job.sfx_paths)
-                if p.is_file() and p.suffix.lower() in c.AUDIO_EXTS
-            ]
-            if not sfx_paths:
-                raise ValueError("No SFX files found in the library.")
-
-            hit_count = 10 if clip_len >= 1.0 else 1
-            hit_times = sorted(random.uniform(0.0, max(0.0, clip_len - 0.2)) for _ in range(hit_count))
-            sfx_hits = []
-            duck_effects = []
-            for t0 in hit_times:
-                max_len = min(2.0, clip_len - t0)
-                if max_len <= 0.05:
-                    continue
-                sfx_path = random.choice(sfx_paths)
-                sfx = AudioFileClip(str(sfx_path))
-                sfx_sources.append(sfx)
-                sfx_clip = sfx.subclipped(0, min(sfx.duration, max_len)).with_start(t0)
-                sfx_hits.append(sfx_clip.with_effects([MultiplyVolume(sfx_volume)]))
-                duck_effects.append(MultiplyVolume(duck_volume, start_time=t0, end_time=t0 + max_len))
-
-            if duck_effects:
-                base_a = base_a.with_effects(duck_effects)
-            mixed_audio = CompositeAudioClip([base_a] + sfx_hits).with_duration(clip_len)
-
-            self.progress_cb(65)
-            self._checkpoint()
-
-            self.status_cb("Rendering output (this is the longest step)...")
-            self.progress_cb(75)
-
-            final = final_v.with_audio(mixed_audio).with_duration(clip_len)
-
-            final.write_videofile(
-                str(job.out_file),
-                codec=codec,
-                audio_codec="aac",
-                audio_bitrate="192k",
-                bitrate=video_bitrate,
-                fps=30,
-                threads=os.cpu_count() or 4,
-                preset=job.render_preset,
-                temp_audiofile_path=str(c.EDIT_BANK_DIR),
-                ffmpeg_params=["-movflags", "faststart"],
-                pixel_format="yuv420p",
-                logger=None,
+            self.status_cb("Rendering output with FFmpeg...")
+            cmd = self._build_ffmpeg_command(
+                ffmpeg=ffmpeg,
+                job=job,
+                video_segments=video_segments,
+                audio_path=audio_path,
+                audio_start=audio_start,
+                sfx_hits=sfx_hits,
             )
+            self._run_ffmpeg(cmd, job.clip_len)
 
             if self._cancel_event.is_set():
-                if job.out_file.exists():
-                    try:
-                        job.out_file.unlink()
-                    except Exception:
-                        pass
+                self._remove_output(job.out_file)
                 raise RuntimeError("Cancelled.")
 
             self.status_cb("Validating output...")
-            ok, msg = utils.validate_output(job.out_file, clip_len)
+            ok, msg = utils.validate_output(job.out_file, job.clip_len)
             if not ok:
-                if job.out_file.exists():
-                    try:
-                        job.out_file.unlink()
-                    except Exception:
-                        pass
+                self._remove_output(job.out_file)
                 raise ValueError(msg)
 
             self.progress_cb(100)
             self.status_cb(f"Done: {job.out_file}")
         finally:
+            self._process = None
+            if self._cancel_event.is_set():
+                self._remove_output(job.out_file)
+            for tmp in c.EDIT_BANK_DIR.glob("*"):
+                try:
+                    if tmp.is_file():
+                        tmp.unlink()
+                except Exception:
+                    pass
+
+    def _validate_video_sources(self, paths: List[Path]) -> List[Path]:
+        unique_paths = [p for p in dict.fromkeys(paths) if p.is_file() and p.suffix.lower() in c.VIDEO_EXTS]
+        if len(unique_paths) != c.MAX_SOURCE_VIDEOS:
+            raise ValueError(f"Exactly {c.MAX_SOURCE_VIDEOS} gameplay videos are required.")
+
+        valid_paths = []
+        for path in unique_paths:
+            if not utils.is_video_readable(path):
+                raise ValueError(f"Video is unreadable: {path.name}")
+            duration = utils.probe_duration(path)
+            if duration is None:
+                raise ValueError(f"Could not read video duration: {path.name}")
+            if duration < c.MIN_SOURCE_SECONDS:
+                raise ValueError(f"{path.name} is shorter than 5 minutes.")
+            if duration > c.MAX_SOURCE_SECONDS:
+                raise ValueError(f"{path.name} is longer than 1 hour.")
+            valid_paths.append(path)
+        random.shuffle(valid_paths)
+        return valid_paths
+
+    def _valid_audio_paths(self, paths: List[Path], label: str) -> List[Path]:
+        valid_paths = [p for p in dict.fromkeys(paths) if p.is_file() and p.suffix.lower() in c.AUDIO_EXTS]
+        if not valid_paths:
+            raise ValueError(f"No built-in {label} files found.")
+        return valid_paths
+
+    def _segment_lengths(self, clip_len: float, count: int) -> List[float]:
+        if count <= 0:
+            return []
+        if count == 1:
+            return [clip_len]
+
+        base = clip_len / count
+        jitter = min(base * 0.35, 1.75)
+        floor = min(base * 0.65, 3.0)
+        lengths = [max(floor, base + random.uniform(-jitter, jitter)) for _ in range(count)]
+        scale = clip_len / sum(lengths)
+        lengths = [max(0.35, length * scale) for length in lengths]
+        lengths[-1] = max(0.35, clip_len - sum(lengths[:-1]))
+        return lengths
+
+    def _pick_sfx_hits(self, sfx_paths: List[Path], clip_len: float):
+        hit_count = max(2, int(clip_len * 0.4))
+        hits = []
+        for _ in range(hit_count):
+            start = random.uniform(0.0, max(0.0, clip_len - 0.25))
+            duration = random.uniform(0.25, min(1.4, max(0.25, clip_len - start)))
+            hits.append((random.choice(sfx_paths), start, duration))
+        return sorted(hits, key=lambda item: item[1])
+
+    def _build_ffmpeg_command(
+        self,
+        ffmpeg: str,
+        job: CreationJob,
+        video_segments,
+        audio_path: Path,
+        audio_start: float,
+        sfx_hits,
+    ) -> List[str]:
+        cmd = [ffmpeg, "-hide_banner", "-v", "error", "-stats_period", "0.5", "-y"]
+        for path, start, duration in video_segments:
+            cmd.extend(["-ss", f"{start:.3f}", "-t", f"{duration + 0.35:.3f}", "-i", str(path)])
+
+        cmd.extend(["-stream_loop", "-1", "-ss", f"{audio_start:.3f}", "-t", f"{job.clip_len:.3f}", "-i", str(audio_path)])
+
+        for path, _, _ in sfx_hits:
+            cmd.extend(["-i", str(path)])
+
+        filter_parts = []
+        for idx, (_, _, duration) in enumerate(video_segments):
+            filter_parts.append(
+                f"[{idx}:v]"
+                f"trim=0:{duration:.3f},setpts=PTS-STARTPTS,"
+                f"scale={job.target_w}:{job.target_h}:force_original_aspect_ratio=increase,"
+                f"crop={job.target_w}:{job.target_h},setsar=1,fps=30,format=yuv420p"
+                f"[v{idx}]"
+            )
+
+        video_labels = "".join(f"[v{idx}]" for idx in range(len(video_segments)))
+        if len(video_segments) == 1:
+            filter_parts.append("[v0]null[vcat]")
+        else:
+            filter_parts.append(f"{video_labels}concat=n={len(video_segments)}:v=1:a=0[vcat]")
+
+        fade_duration = min(0.25, job.clip_len / 4)
+        fade_start = max(0.0, job.clip_len - fade_duration)
+        filter_parts.append(
+            f"[vcat]fade=t=in:st=0:d={fade_duration:.3f},"
+            f"fade=t=out:st={fade_start:.3f}:d={fade_duration:.3f}[vout]"
+        )
+
+        audio_idx = len(video_segments)
+        filter_parts.append(
+            f"[{audio_idx}:a]atrim=0:{job.clip_len:.3f},asetpts=PTS-STARTPTS,volume=0.82[music]"
+        )
+
+        audio_mix_labels = ["[music]"]
+        for idx, (_, start, duration) in enumerate(sfx_hits):
+            input_idx = len(video_segments) + 1 + idx
+            delay_ms = int(start * 1000)
+            filter_parts.append(
+                f"[{input_idx}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS,"
+                f"volume={job.sfx_volume:.3f},adelay={delay_ms}:all=1[sfx{idx}]"
+            )
+            audio_mix_labels.append(f"[sfx{idx}]")
+
+        filter_parts.append(
+            f"{''.join(audio_mix_labels)}"
+            f"amix=inputs={len(audio_mix_labels)}:duration=first:dropout_transition=0,"
+            f"atrim=0:{job.clip_len:.3f}[aout]"
+        )
+
+        codec = "h264_qsv" if job.hw_encode else "libx264"
+        cmd.extend(
+            [
+                "-filter_complex",
+                ";".join(filter_parts),
+                "-map",
+                "[vout]",
+                "-map",
+                "[aout]",
+                "-c:v",
+                codec,
+            ]
+        )
+        if codec == "libx264":
+            cmd.extend(["-preset", job.render_preset])
+        cmd.extend(
+            [
+                "-b:v",
+                job.video_bitrate,
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+                "-pix_fmt",
+                "yuv420p",
+                "-threads",
+                str(os.cpu_count() or 4),
+                "-progress",
+                "pipe:1",
+                "-nostats",
+                str(job.out_file),
+            ]
+        )
+        return cmd
+
+    def _run_ffmpeg(self, cmd: List[str], clip_len: float) -> None:
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        tail = []
+        assert self._process.stdout is not None
+        while True:
+            line = self._process.stdout.readline()
+            if line:
+                text = line.strip()
+                if text:
+                    tail.append(text)
+                    tail = tail[-20:]
+                    self._update_render_progress(text, clip_len)
+
+            if self._cancel_event.is_set():
+                try:
+                    self._process.terminate()
+                    self._process.wait(timeout=5)
+                except Exception:
+                    try:
+                        self._process.kill()
+                    except Exception:
+                        pass
+                raise RuntimeError("Cancelled.")
+
+            if line == "" and self._process.poll() is not None:
+                break
+
+        return_code = self._process.wait()
+        if return_code != 0:
+            detail = "\n".join(tail[-8:]) or f"ffmpeg exited with code {return_code}."
+            raise RuntimeError(detail)
+
+    def _update_render_progress(self, text: str, clip_len: float) -> None:
+        if "=" not in text:
+            return
+        key, value = text.split("=", 1)
+        seconds = None
+        if key in {"out_time_ms", "out_time_us"}:
             try:
-                if final is not None:
-                    final.close()
-                if final_v is not None:
-                    final_v.close()
-                if epic_v is not None and epic_v is not stitched_v:
-                    epic_v.close()
-                if stitched_v is not None:
-                    stitched_v.close()
-                for seg in segments:
-                    seg.close()
-                for v in video_clips:
-                    v.close()
-                for sfx in sfx_sources:
-                    sfx.close()
-                if a is not None:
-                    a.close()
-                if self._cancel_event.is_set() and job.out_file.exists():
-                    try:
-                        job.out_file.unlink()
-                    except Exception:
-                        pass
-                for tmp in c.EDIT_BANK_DIR.glob("*"):
-                    try:
-                        if tmp.is_file():
-                            tmp.unlink()
-                    except Exception:
-                        pass
+                seconds = int(value) / 1_000_000
+            except ValueError:
+                return
+        elif key == "out_time":
+            seconds = self._parse_ffmpeg_time(value)
+
+        if seconds is None or clip_len <= 0:
+            return
+        pct = 15 + int(min(1.0, max(0.0, seconds / clip_len)) * 83)
+        self.progress_cb(min(98, pct))
+
+    def _parse_ffmpeg_time(self, value: str) -> Optional[float]:
+        try:
+            hours, minutes, seconds = value.split(":")
+            return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        except Exception:
+            return None
+
+    def _remove_output(self, path: Path) -> None:
+        if path.exists():
+            try:
+                path.unlink()
             except Exception:
                 pass

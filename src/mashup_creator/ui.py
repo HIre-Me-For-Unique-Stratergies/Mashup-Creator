@@ -1,7 +1,6 @@
 
 import json
 import os
-import random
 import shutil
 import threading
 import time
@@ -15,7 +14,7 @@ from . import security
 from . import constants as c
 from .creator import CreationJob
 from .worker import RenderWorker
-from .utils import list_files, safe_copy_into_library, open_in_file_explorer
+from .utils import list_files, probe_duration, safe_copy_into_library, open_in_file_explorer
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -64,18 +63,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setWindowIcon(QtGui.QIcon(str(c.ICON_PATH)))
 
     def _init_state(self):
-        self.equal_lengths = False
         self.render_speed = "veryfast"
         self.downscale = False
-        self.order_mode = "random"
-        self.max_videos = 6
-        self.min_segment = 2.0
-        self.sfx_volume = 1.6
-        self.duck_volume = 0.65
+        self.sfx_volume = 1.35
         self.batch_count = 1
         self.hw_encode = False
         self.auto_create = True
-        self.epic_mode = True
 
     def _theme(self) -> str:
         return """
@@ -166,21 +159,28 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.setSpacing(14)
         main_layout.setContentsMargins(8, 8, 8, 8)
 
-        media_box = QtWidgets.QGroupBox("Media")
+        media_box = QtWidgets.QGroupBox("Gameplay Sources")
         media_layout = QtWidgets.QVBoxLayout(media_box)
         upload_row = QtWidgets.QHBoxLayout()
-        self.btn_upload_video = self._btn("Upload Video(s)", self.upload_videos)
-        self.btn_upload_audio = self._btn("Upload Audio(s)", self.upload_audio)
-        self.btn_upload_sfx = self._btn("Upload SFX", self.upload_sfx)
+        self.btn_upload_video = self._btn("Add Video(s)", self.upload_videos)
+        self.btn_replace_video = self._btn("Replace Selected", self.replace_selected_video)
+        self.btn_remove_video = self._btn("Remove Selected", self.remove_selected_video)
+        self.btn_open_video_folder = self._btn("Open Source Folder", lambda: open_in_file_explorer(c.VIDEO_DIR))
         upload_row.addWidget(self.btn_upload_video)
-        upload_row.addWidget(self.btn_upload_audio)
-        upload_row.addWidget(self.btn_upload_sfx)
+        upload_row.addWidget(self.btn_replace_video)
+        upload_row.addWidget(self.btn_remove_video)
+        upload_row.addWidget(self.btn_open_video_folder)
         upload_row.addStretch()
         media_layout.addLayout(upload_row)
 
-        self.video_count_lbl = QtWidgets.QLabel("Videos: 0")
-        self.audio_count_lbl = QtWidgets.QLabel("Audio: 0")
-        self.sfx_count_lbl = QtWidgets.QLabel("SFX: 0")
+        self.video_list = QtWidgets.QListWidget()
+        self.video_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.video_list.itemSelectionChanged.connect(self._update_video_buttons)
+        media_layout.addWidget(self.video_list)
+
+        self.video_count_lbl = QtWidgets.QLabel("Gameplay videos: 0/5")
+        self.audio_count_lbl = QtWidgets.QLabel("Built-in songs: 0")
+        self.sfx_count_lbl = QtWidgets.QLabel("Built-in SFX: 0")
         counts_row = QtWidgets.QHBoxLayout()
         counts_row.addWidget(self.video_count_lbl)
         counts_row.addWidget(self.audio_count_lbl)
@@ -236,8 +236,8 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(logs_box, 1)
 
         note = QtWidgets.QLabel(
-            "Output: 25s (preview 5s). Resolution: 720x1280 or 1080x1920. "
-            "Transitions only at start/end. Pause/Resume applies between steps."
+            "Output: 25s (preview 5s). Add exactly five gameplay videos, 5 minutes to 1 hour each. "
+            "Songs and SFX are randomly selected from the built-in library."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #efe9ff; font-size: 10px;")
@@ -260,28 +260,6 @@ class MainWindow(QtWidgets.QMainWindow):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
 
-        sources = QtWidgets.QGroupBox("Sources")
-        s_layout = QtWidgets.QFormLayout(sources)
-        s_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        s_layout.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        s_layout.setHorizontalSpacing(12)
-        s_layout.setVerticalSpacing(8)
-        self.radio_random = QtWidgets.QRadioButton("Random")
-        self.radio_list = QtWidgets.QRadioButton("List order")
-        s_layout.addRow("Order", self._hbox([self.radio_random, self.radio_list]))
-        self.spin_max_videos = QtWidgets.QSpinBox()
-        self.spin_max_videos.setRange(1, 20)
-        s_layout.addRow("Max videos", self.spin_max_videos)
-        self.spin_min_seg = QtWidgets.QDoubleSpinBox()
-        self.spin_min_seg.setRange(0.5, 10.0)
-        self.spin_min_seg.setSingleStep(0.5)
-        s_layout.addRow("Min segment (s)", self.spin_min_seg)
-        self.chk_equal = QtWidgets.QCheckBox("Equal video lengths")
-        self.chk_epic = QtWidgets.QCheckBox("Epic motion")
-        s_layout.addRow(self.chk_equal)
-        s_layout.addRow(self.chk_epic)
-        grid.addWidget(sources, 0, 0)
-
         perf = QtWidgets.QGroupBox("Performance")
         p_layout = QtWidgets.QFormLayout(perf)
         p_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
@@ -295,9 +273,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_hw = QtWidgets.QCheckBox("Use Intel Quick Sync (if available)")
         p_layout.addRow(self.chk_downscale)
         p_layout.addRow(self.chk_hw)
-        grid.addWidget(perf, 0, 1)
+        grid.addWidget(perf, 0, 0)
 
-        audio = QtWidgets.QGroupBox("Audio")
+        audio = QtWidgets.QGroupBox("Mix")
         a_layout = QtWidgets.QFormLayout(audio)
         a_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         a_layout.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
@@ -307,11 +285,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_sfx.setRange(0.5, 3.0)
         self.spin_sfx.setSingleStep(0.1)
         a_layout.addRow("SFX volume", self.spin_sfx)
-        self.spin_duck = QtWidgets.QDoubleSpinBox()
-        self.spin_duck.setRange(0.2, 1.0)
-        self.spin_duck.setSingleStep(0.05)
-        a_layout.addRow("Duck volume", self.spin_duck)
-        grid.addWidget(audio, 1, 0)
+        grid.addWidget(audio, 0, 1)
 
         batch = QtWidgets.QGroupBox("Batch / Auto")
         b_layout = QtWidgets.QFormLayout(batch)
@@ -324,7 +298,7 @@ class MainWindow(QtWidgets.QMainWindow):
         b_layout.addRow("Videos to create", self.spin_batch)
         self.chk_auto = QtWidgets.QCheckBox("Auto create until paused or cancelled")
         b_layout.addRow(self.chk_auto)
-        grid.addWidget(batch, 1, 1)
+        grid.addWidget(batch, 1, 0)
 
         adv_layout.addLayout(grid)
         adv_layout.addStretch()
@@ -352,7 +326,7 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction("Open Project Folder", lambda: open_in_file_explorer(c.BASE_DIR))
         file_menu.addAction("Open Creations Folder", lambda: open_in_file_explorer(c.OUTPUTS_DIR))
         file_menu.addAction("Open Edit Bank", lambda: open_in_file_explorer(c.EDIT_BANK_DIR))
-        file_menu.addAction("Open Library Folder", lambda: open_in_file_explorer(c.LIB_DIR))
+        file_menu.addAction("Open Source Videos Folder", lambda: open_in_file_explorer(c.VIDEO_DIR))
         file_menu.addAction("Open Config Folder", lambda: open_in_file_explorer(c.CONFIG_DIR))
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
@@ -392,10 +366,10 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(
             self,
             "How to Use",
-            "1) Upload videos, audio, and SFX into the library.\n"
-            "2) Use Advanced to choose random or sorted library order.\n"
+            "1) Add exactly five gameplay videos.\n"
+            "2) Use Replace Selected or Remove Selected to manage the five slots.\n"
             "3) Click Start to create a 25s short, or Preview 5s.\n"
-            "4) Use Advanced for speed, resolution, batch, and audio settings.\n"
+            "4) Songs and SFX are randomly selected from the built-in folders.\n"
             "5) Outputs save to the creations folder.\n"
             "Tip: Enable Auto create for continuous generation.",
         )
@@ -428,18 +402,12 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             self._apply_settings_to_ui()
             return
-        self.equal_lengths = bool(data.get("equal_lengths", False))
         self.render_speed = data.get("render_speed", "veryfast")
         self.downscale = bool(data.get("downscale", False))
-        self.order_mode = data.get("order_mode", "random")
-        self.max_videos = int(data.get("max_videos", 6))
-        self.min_segment = float(data.get("min_segment", 2.0))
-        self.sfx_volume = float(data.get("sfx_volume", 1.6))
-        self.duck_volume = float(data.get("duck_volume", 0.65))
+        self.sfx_volume = float(data.get("sfx_volume", 1.35))
         self.batch_count = int(data.get("batch_count", 1))
         self.hw_encode = bool(data.get("hw_encode", False))
         self.auto_create = bool(data.get("auto_create", True))
-        self.epic_mode = bool(data.get("epic_mode", True))
         self._apply_settings_to_ui()
 
     def _save_settings(self, auto_create: Optional[bool] = None):
@@ -447,18 +415,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if auto_create is None:
             auto_create = self.chk_auto.isChecked() if hasattr(self, "chk_auto") else self.auto_create
         data = {
-            "equal_lengths": self.equal_lengths,
             "render_speed": self.render_speed,
             "downscale": self.downscale,
-            "order_mode": self.order_mode,
-            "max_videos": self.max_videos,
-            "min_segment": self.min_segment,
             "sfx_volume": self.sfx_volume,
-            "duck_volume": self.duck_volume,
             "batch_count": self.batch_count,
             "hw_encode": self.hw_encode,
             "auto_create": auto_create,
-            "epic_mode": self.epic_mode,
         }
         try:
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -466,18 +428,11 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def _apply_settings_to_ui(self):
-        self.radio_random.setChecked(self.order_mode == "random")
-        self.radio_list.setChecked(self.order_mode == "list")
-        self.spin_max_videos.setValue(self.max_videos)
-        self.spin_min_seg.setValue(self.min_segment)
-        self.chk_equal.setChecked(self.equal_lengths)
-        self.chk_epic.setChecked(self.epic_mode)
         self.radio_fast.setChecked(self.render_speed == "veryfast")
         self.radio_ultra.setChecked(self.render_speed == "ultrafast")
         self.chk_downscale.setChecked(self.downscale)
         self.chk_hw.setChecked(self.hw_encode)
         self.spin_sfx.setValue(self.sfx_volume)
-        self.spin_duck.setValue(self.duck_volume)
         self.spin_batch.setValue(self.batch_count)
         self.chk_auto.setChecked(self.auto_create)
 
@@ -510,12 +465,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_counts()
 
     def _update_counts(self):
-        vids = len(list_files(c.VIDEO_DIR, c.VIDEO_EXTS))
+        videos = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
         auds = len(list_files(c.AUDIO_DIR, c.AUDIO_EXTS))
         sfxs = len(list_files(c.SFX_DIR, c.AUDIO_EXTS))
-        self.video_count_lbl.setText(f"Videos: {vids} available")
-        self.audio_count_lbl.setText(f"Audio: {auds} available")
-        self.sfx_count_lbl.setText(f"SFX: {sfxs} available")
+
+        selected = self._selected_video_path()
+        self.video_list.clear()
+        for idx, path in enumerate(videos, start=1):
+            item = QtWidgets.QListWidgetItem(f"{idx}. {path.name}")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(str(path))
+            self.video_list.addItem(item)
+            if selected and selected == path:
+                self.video_list.setCurrentItem(item)
+
+        self.video_count_lbl.setText(f"Gameplay videos: {len(videos)}/{c.MAX_SOURCE_VIDEOS}")
+        self.audio_count_lbl.setText(f"Built-in songs: {auds}")
+        self.sfx_count_lbl.setText(f"Built-in SFX: {sfxs}")
+        self._update_video_buttons()
+
+    def _selected_video_path(self) -> Optional[Path]:
+        if not hasattr(self, "video_list"):
+            return None
+        item = self.video_list.currentItem()
+        if not item:
+            return None
+        value = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        return Path(value) if value else None
+
+    def _update_video_buttons(self):
+        if not hasattr(self, "btn_upload_video"):
+            return
+        videos = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
+        songs = list_files(c.AUDIO_DIR, c.AUDIO_EXTS)
+        sfxs = list_files(c.SFX_DIR, c.AUDIO_EXTS)
+        has_selection = self._selected_video_path() is not None
+        is_busy = bool((self.worker_thread and self.worker_thread.isRunning()) or self.job_start_time is not None)
+        ready = len(videos) == c.MAX_SOURCE_VIDEOS and bool(songs) and bool(sfxs)
+        self.btn_upload_video.setEnabled((len(videos) < c.MAX_SOURCE_VIDEOS) and not is_busy)
+        self.btn_replace_video.setEnabled(has_selection and not is_busy)
+        self.btn_remove_video.setEnabled(has_selection and not is_busy)
+        self.btn_open_video_folder.setEnabled(not is_busy)
+        self.btn_start.setEnabled(ready and not is_busy)
+        self.btn_preview.setEnabled(ready and not is_busy)
 
     def _tick_timer(self):
         if self.worker_thread and self.worker_thread.isRunning() and self.job_start_time:
@@ -533,67 +525,104 @@ class MainWindow(QtWidgets.QMainWindow):
         mins = total // 60
         secs = total % 60
         return f"{mins:02d}:{secs:02d}"
+
     def upload_videos(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Select video file(s)")
+        existing = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
+        remaining = c.MAX_SOURCE_VIDEOS - len(existing)
+        if remaining <= 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Five Videos Already Added",
+                "Remove or replace a gameplay video before adding another one.",
+            )
+            return
+
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Select gameplay video file(s)")
         if not paths:
             return
         copied = 0
-        for s in paths:
+        skipped = 0
+        for s in paths[:remaining]:
             src = Path(s)
-            ok, _ = security.validate_media_file(src, "video")
-            if ok and src.suffix.lower() in c.VIDEO_EXTS:
+            ok, msg = self._validate_source_video(src)
+            if ok:
                 safe_copy_into_library(src, c.VIDEO_DIR)
                 copied += 1
+            else:
+                skipped += 1
+                self._log_error(f"{src.name}: {msg}")
+        if len(paths) > remaining:
+            skipped += len(paths) - remaining
+            self._log_error(f"Only {remaining} slot(s) were available.")
         self._refresh_lists()
-        self._log(f"Uploaded {copied} video file(s).")
+        self._log(f"Added {copied} gameplay video(s).")
+        if skipped:
+            self._log_error(f"Skipped {skipped} video file(s).")
 
-    def upload_audio(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Select audio file(s)")
-        if not paths:
+    def replace_selected_video(self):
+        selected = self._selected_video_path()
+        if not selected:
             return
-        copied = 0
-        for s in paths:
-            src = Path(s)
-            ok, _ = security.validate_media_file(src, "audio")
-            if ok and src.suffix.lower() in c.AUDIO_EXTS:
-                safe_copy_into_library(src, c.AUDIO_DIR)
-                copied += 1
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select replacement gameplay video")
+        if not path:
+            return
+        src = Path(path)
+        if src.resolve() == selected.resolve():
+            self._log("Selected replacement is already in that slot.")
+            return
+
+        ok, msg = self._validate_source_video(src)
+        if not ok:
+            self._log_error(f"{src.name}: {msg}")
+            QtWidgets.QMessageBox.critical(self, "Invalid Video", msg)
+            return
+
+        new_path = safe_copy_into_library(src, c.VIDEO_DIR)
+        try:
+            selected.unlink()
+        except Exception as exc:
+            self._log_error(f"Could not remove old video: {exc}")
         self._refresh_lists()
-        self._log(f"Uploaded {copied} audio file(s).")
+        self._log(f"Replaced {selected.name} with {new_path.name}.")
 
-    def upload_sfx(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Select SFX audio file(s)")
-        if not paths:
+    def remove_selected_video(self):
+        selected = self._selected_video_path()
+        if not selected:
             return
-        copied = 0
-        for s in paths:
-            src = Path(s)
-            ok, _ = security.validate_media_file(src, "audio")
-            if ok and src.suffix.lower() in c.AUDIO_EXTS:
-                safe_copy_into_library(src, c.SFX_DIR)
-                copied += 1
+        if QtWidgets.QMessageBox.question(
+            self,
+            "Remove Video",
+            f"Remove {selected.name} from the five gameplay sources?",
+        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            selected.unlink()
+            self._log(f"Removed {selected.name}.")
+        except Exception as exc:
+            self._log_error(f"Could not remove video: {exc}")
         self._refresh_lists()
-        if copied == 0:
-            self._log_error("No valid SFX files selected.")
-            return
-        self._log(f"Uploaded {copied} SFX file(s).")
 
-    def _collect_selections(self) -> Tuple[List[Path], Optional[Path], List[Path]]:
+    def _validate_source_video(self, src: Path) -> Tuple[bool, str]:
+        ok, msg = security.validate_media_file(src, "video", max_size_mb=65536)
+        if not ok:
+            return False, msg
+        try:
+            duration = probe_duration(src)
+        except Exception as exc:
+            return False, f"Could not read duration with ffprobe: {exc}"
+        if duration is None:
+            return False, "Could not read duration with ffprobe."
+        if duration < c.MIN_SOURCE_SECONDS:
+            return False, "Gameplay videos must be at least 5 minutes long."
+        if duration > c.MAX_SOURCE_SECONDS:
+            return False, "Gameplay videos must be no longer than 1 hour."
+        return True, "OK"
+
+    def _collect_selections(self) -> Tuple[List[Path], List[Path], List[Path]]:
         all_vids = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
         all_auds = list_files(c.AUDIO_DIR, c.AUDIO_EXTS)
         all_sfxs = list_files(c.SFX_DIR, c.AUDIO_EXTS)
-
-        vids = []
-        if all_vids:
-            pick_count = min(len(all_vids), max(1, self.max_videos))
-            if self.order_mode == "list":
-                vids = all_vids[:pick_count]
-            else:
-                vids = random.sample(all_vids, pick_count)
-
-        a = random.choice(all_auds) if all_auds else None
-
-        return vids, a, all_sfxs
+        return all_vids, all_auds, all_sfxs
 
     def start_creation(self):
         self._start_jobs(preview=False)
@@ -606,24 +635,29 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Busy", "A creation is already running.")
             return
 
-        self.equal_lengths = self.chk_equal.isChecked()
         self.render_speed = "veryfast" if self.radio_fast.isChecked() else "ultrafast"
         self.downscale = self.chk_downscale.isChecked()
-        self.order_mode = "random" if self.radio_random.isChecked() else "list"
-        self.max_videos = self.spin_max_videos.value()
-        self.min_segment = self.spin_min_seg.value()
         self.sfx_volume = self.spin_sfx.value()
-        self.duck_volume = self.spin_duck.value()
         self.batch_count = self.spin_batch.value()
         self.hw_encode = self.chk_hw.isChecked()
         requested_auto_create = self.chk_auto.isChecked()
         self.auto_create = requested_auto_create and not preview
-        self.epic_mode = self.chk_epic.isChecked()
         self._save_settings(auto_create=requested_auto_create)
 
-        vids, a, sfxs = self._collect_selections()
-        if not vids or not a or not sfxs:
-            QtWidgets.QMessageBox.critical(self, "Missing Media", "You need at least one video, one audio, and one SFX in the library.")
+        vids, songs, sfxs = self._collect_selections()
+        if len(vids) != c.MAX_SOURCE_VIDEOS:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Five Videos Required",
+                f"Add exactly {c.MAX_SOURCE_VIDEOS} gameplay videos before creating a mashup.",
+            )
+            return
+        if not songs or not sfxs:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Missing Built-in Media",
+                "Built-in songs and SFX must exist in library/audio and library/sfx before creating a mashup.",
+            )
             return
 
         target_w = 720 if self.downscale else 1080
@@ -643,44 +677,32 @@ class MainWindow(QtWidgets.QMainWindow):
             jobs.append(
                 CreationJob(
                     video_paths=vids,
-                    audio_path=a,
+                    audio_paths=songs,
                     sfx_paths=sfxs,
                     out_file=out_file,
-                    equal_lengths=self.equal_lengths,
                     render_preset=self.render_speed,
                     target_w=target_w,
                     target_h=target_h,
                     video_bitrate=bitrate,
-                    order_mode=self.order_mode,
-                    max_videos=self.max_videos,
-                    min_seg=self.min_segment,
                     sfx_volume=self.sfx_volume,
-                    duck_volume=self.duck_volume,
                     clip_len=clip_len,
                     hw_encode=self.hw_encode,
-                    epic_mode=self.epic_mode,
                 )
             )
 
         self.last_job_info = {
             "videos_selected": len(vids),
-            "audio": a.name,
+            "song_pool": len(songs),
             "sfx_count": len(sfxs),
-            "equal_lengths": self.equal_lengths,
-            "order_mode": self.order_mode,
-            "max_videos": self.max_videos,
-            "min_segment": self.min_segment,
             "render_preset": self.render_speed,
             "downscale": self.downscale,
             "resolution": f"{target_w}x{target_h}",
             "bitrate": bitrate,
             "sfx_volume": self.sfx_volume,
-            "duck_volume": self.duck_volume,
             "batch_count": len(jobs),
             "auto_create": self.auto_create,
             "preview": preview,
             "hw_encode": self.hw_encode,
-            "epic_mode": self.epic_mode,
         }
 
         self.latest_output_file = None
@@ -690,11 +712,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_button_state(self.btn_pause, True)
         self._set_button_state(self.btn_cancel, True)
         self._set_button_state(self.btn_resume, False)
+        self._set_button_state(self.btn_upload_video, False)
+        self._set_button_state(self.btn_replace_video, False)
+        self._set_button_state(self.btn_remove_video, False)
+        self._set_button_state(self.btn_open_video_folder, False)
 
         self.job_start_time = time.monotonic()
         self.render_start_time = None
         self.rendering = False
-        self.progress.setRange(0, 0)
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText("Preparing render...")
         self._log("Preparing render...")
@@ -743,14 +769,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_status(self, text: str):
         self.status_label.setText(text)
         self._log(text)
-        if text.startswith("Loading media"):
+        if text.startswith("Checking FFmpeg") or text.startswith("Picking random scenes"):
             if self.progress.maximum() == 0:
                 self.progress.setRange(0, 100)
                 self.progress.setValue(0)
         if text.startswith("Rendering output"):
             if not self.rendering:
                 self.render_start_time = time.monotonic()
-                self.progress.setRange(0, 0)
+                self.progress.setRange(0, 100)
             self.rendering = True
         elif text.startswith("Done:") or text.startswith("Failed:"):
             if self.rendering and self.render_start_time is not None:
@@ -800,6 +826,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.render_start_time = None
         self.rendering = False
         self.progress.setRange(0, 100)
+        self._refresh_lists()
         if self.close_requested:
             self.close_requested = False
             QtCore.QTimer.singleShot(0, self.close)

@@ -1,12 +1,14 @@
 # Mashup Creator
 
 Mashup Creator is a Windows desktop app that builds punchy 25-second YouTube Shorts
-by randomly cutting multiple source videos, adding a music segment, and placing 10
-random SFX hits across the timeline. Output is vertical (1080x1920 by default).
+from exactly five gameplay source videos. It randomly cuts one short scene from each
+source, picks a built-in song, and places random built-in SFX hits across the
+timeline. Output is vertical (1080x1920 by default).
 
 ## Features
-- Random video mashups with epic motion and start/end fades
-- Random audio selection and automatic ducking under SFX
+- Five-slot gameplay source manager with add, replace, and remove controls
+- Fast FFmpeg-based video rendering
+- Random built-in song selection
 - 10 random SFX hits per 25-second output
 - Auto-create loop (continuous generation)
 - Progress/status reporting in-app
@@ -52,18 +54,22 @@ python main.py
 ```
 
 ## How to Use
-1) Click Upload Video(s), Upload Audio(s), and Upload SFX.
-2) Press Preview 5s for a short smoke test, or Start for a 25s short.
-3) Disable Auto create to render only the configured batch count.
-4) Enable Auto create to keep rendering until paused or cancelled.
-5) Output files appear in `creations/`.
+1) Add exactly five gameplay videos. Each source must be 5 minutes to 1 hour long.
+2) Use Replace Selected or Remove Selected to manage the five video slots.
+3) Press Preview 5s for a short smoke test, or Start for a 25s short.
+4) Disable Auto create to render only the configured batch count.
+5) Enable Auto create to keep rendering until paused or cancelled.
+6) Output files appear in `creations/`.
+
+Songs and SFX are treated as built-in app assets. Put them in `library/audio/` and
+`library/sfx/` before distributing or running the app; the UI does not let the user
+upload or change those components.
 
 ## Settings
 Advanced Settings include:
 - Render preset (Very fast / Ultra fast)
 - Output resolution (1080x1920 or 720x1280)
-- Max videos per mashup and minimum segment length
-- SFX volume and ducking level
+- SFX volume
 - Batch size and auto-create behavior
 
 Settings are saved in `config/settings.json`.

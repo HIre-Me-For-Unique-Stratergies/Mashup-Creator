@@ -1,14 +1,8 @@
 {
-  "equal_lengths": false,
   "render_speed": "veryfast",
   "downscale": false,
-  "order_mode": "random",
-  "max_videos": 6,
-  "min_segment": 2.0,
-  "sfx_volume": 1.6,
-  "duck_volume": 0.65,
+  "sfx_volume": 1.35,
   "batch_count": 1,
   "hw_encode": false,
-  "auto_create": true,
-  "epic_mode": true
+  "auto_create": true
 }
