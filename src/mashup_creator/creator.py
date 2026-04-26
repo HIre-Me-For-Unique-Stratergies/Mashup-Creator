@@ -137,20 +137,31 @@ class Creator:
 
     def _validate_video_sources(self, paths: List[Path]) -> List[Path]:
         unique_paths = [p for p in dict.fromkeys(paths) if p.is_file() and p.suffix.lower() in c.VIDEO_EXTS]
-        if len(unique_paths) != c.MAX_SOURCE_VIDEOS:
-            raise ValueError(f"Exactly {c.MAX_SOURCE_VIDEOS} gameplay videos are required.")
+        if not unique_paths:
+            raise ValueError("No gameplay videos were found in the selected folder.")
+
+        candidates = unique_paths[:]
+        random.shuffle(candidates)
 
         valid_paths = []
-        for path in unique_paths:
+        for path in candidates:
             if not utils.is_video_readable(path):
-                raise ValueError(f"Video is unreadable: {path.name}")
+                continue
             duration = utils.probe_duration(path)
             if duration is None:
-                raise ValueError(f"Could not read video duration: {path.name}")
+                continue
             if duration < c.MIN_SOURCE_SECONDS:
-                raise ValueError(f"{path.name} is shorter than 5 minutes.")
+                continue
             valid_paths.append(path)
-        random.shuffle(valid_paths)
+            if len(valid_paths) >= c.MAX_SOURCE_VIDEOS:
+                break
+        if not valid_paths:
+            raise ValueError("The selected folder has no readable videos that are at least 5 seconds long.")
+        if len(valid_paths) < c.MAX_SOURCE_VIDEOS:
+            raise ValueError(
+                f"The selected source set needs at least {c.MAX_SOURCE_VIDEOS} readable videos "
+                "so clips are not reused in the same output."
+            )
         return valid_paths
 
     def _valid_audio_paths(self, paths: List[Path], label: str) -> List[Path]:
@@ -170,11 +181,17 @@ class Creator:
 
     def _pick_sfx_hits(self, sfx_paths: List[Path], clip_len: float):
         hit_count = max(2, int(clip_len * 0.4))
+        sfx_bag = sfx_paths[:]
+        random.shuffle(sfx_bag)
         hits = []
         for _ in range(hit_count):
+            if not sfx_bag:
+                sfx_bag = sfx_paths[:]
+                random.shuffle(sfx_bag)
+            sfx_path = sfx_bag.pop()
             start = random.uniform(0.0, max(0.0, clip_len - 0.25))
             duration = random.uniform(0.25, min(1.4, max(0.25, clip_len - start)))
-            hits.append((random.choice(sfx_paths), start, duration))
+            hits.append((sfx_path, start, duration))
         return sorted(hits, key=lambda item: item[1])
 
     def _build_ffmpeg_command(

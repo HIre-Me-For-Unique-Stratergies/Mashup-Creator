@@ -4,5 +4,7 @@
   "sfx_volume": 1.35,
   "batch_count": 1,
   "hw_encode": false,
-  "auto_create": true
+  "auto_create": true,
+  "video_source_dir": "library/video",
+  "include_video_subfolders": false
 }

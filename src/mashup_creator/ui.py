@@ -14,7 +14,7 @@ from . import security
 from . import constants as c
 from .creator import CreationJob
 from .worker import RenderWorker
-from .utils import list_files, make_video_thumbnail, probe_duration, safe_copy_into_library, open_in_file_explorer
+from .utils import list_files, probe_duration, open_in_file_explorer
 
 
 class VideoSlotBlock(QtWidgets.QFrame):
@@ -145,7 +145,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.batch_count = 1
         self.hw_encode = False
         self.auto_create = True
-        self.selected_video_slot = 0
+        self.video_source_dir = str(c.VIDEO_DIR)
+        self.include_video_subfolders = False
 
     def _theme(self) -> str:
         return """
@@ -154,11 +155,14 @@ class MainWindow(QtWidgets.QMainWindow):
         QLabel { color: #ffffff; font-weight: 600; }
         QFrame#header { background: #7b4dff; border: 1px solid #9b82ff; border-radius: 8px; }
         QFrame#modeBox { background: #f7f1ff; border: 1px solid #e0d5ff; border-radius: 8px; }
+        QWidget#sidePanel { background: #f7f1ff; border: 1px solid #e0d5ff; border-radius: 8px; }
+        QScrollArea { background: transparent; border: none; }
         QLabel#subtitle { color: #efe9ff; font-size: 12px; font-weight: 600; }
         QGroupBox QLabel { color: #24163c; font-weight: 600; }
         QGroupBox QCheckBox, QGroupBox QRadioButton { color: #24163c; font-weight: 600; }
         QGroupBox { color: #24163c; background: #ffffff; border: 1px solid #e0d5ff; border-radius: 8px; margin-top: 14px; }
         QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ffffff; font-size: 14px; font-weight: 800; }
+        QGroupBox#createBox::title, QGroupBox#outputBox::title { color: #7b4dff; }
         QTextEdit { background: #ffffff; color: #24163c; border: 1px solid #e0d5ff; border-radius: 8px; }
         QProgressBar { border: 1px solid #e0d5ff; border-radius: 6px; text-align: center; background: #ffffff; min-height: 14px; max-height: 14px; }
         QProgressBar::chunk { background-color: #2fbf71; border-radius: 6px; }
@@ -246,20 +250,21 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addLayout(workspace, 1)
 
         left_panel = QtWidgets.QWidget()
+        left_panel.setMinimumWidth(680)
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
         workspace.addWidget(left_panel, 1)
 
         media_box = QtWidgets.QGroupBox("Gameplay Sources")
+        media_box.setMinimumHeight(230)
         media_layout = QtWidgets.QVBoxLayout(media_box)
         media_layout.setContentsMargins(14, 18, 14, 14)
         media_layout.setSpacing(12)
 
-        media_header = QtWidgets.QHBoxLayout()
         counts_row = QtWidgets.QHBoxLayout()
         counts_row.setSpacing(8)
-        self.video_count_lbl = QtWidgets.QLabel("Gameplay videos: 0/5")
+        self.video_count_lbl = QtWidgets.QLabel("Source videos: 0")
         self.audio_count_lbl = QtWidgets.QLabel("Built-in songs: 0")
         self.sfx_count_lbl = QtWidgets.QLabel("Built-in SFX: 0")
         for label in [self.video_count_lbl, self.audio_count_lbl, self.sfx_count_lbl]:
@@ -269,50 +274,80 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             counts_row.addWidget(label)
         counts_row.addStretch()
-        media_header.addLayout(counts_row, 1)
+        media_layout.addLayout(counts_row)
 
+        folder_box = QtWidgets.QFrame()
+        folder_box.setObjectName("modeBox")
+        folder_box.setMinimumHeight(142)
+        folder_layout = QtWidgets.QVBoxLayout(folder_box)
+        folder_layout.setContentsMargins(12, 12, 12, 12)
+        folder_layout.setSpacing(8)
+        folder_title = QtWidgets.QLabel("Video Source Folder")
+        folder_title.setStyleSheet("color: #24163c; font-size: 12px; font-weight: 800;")
+        folder_layout.addWidget(folder_title)
+        self.video_folder_label = QtWidgets.QLabel("")
+        self.video_folder_label.setWordWrap(False)
+        self.video_folder_label.setMinimumHeight(24)
+        self.video_folder_label.setStyleSheet("color: #473064; font-size: 12px; font-weight: 700;")
+        folder_layout.addWidget(self.video_folder_label)
+        self.chk_include_subfolders = QtWidgets.QCheckBox("Include videos in subfolders")
+        self.chk_include_subfolders.setToolTip("When enabled, videos inside folders below the selected folder can be used.")
+        self.chk_include_subfolders.stateChanged.connect(self._on_include_subfolders_changed)
+        folder_layout.addWidget(self.chk_include_subfolders)
         source_buttons = QtWidgets.QHBoxLayout()
         source_buttons.setSpacing(8)
-        self.btn_upload_video = self._btn("Add Video(s)", self.upload_videos)
-        self.btn_replace_video = self._btn("Replace Slot", self.replace_selected_video)
-        self.btn_remove_video = self._btn("Remove Slot", self.remove_selected_video)
-        self.btn_open_video_folder = self._btn("Folder", lambda: open_in_file_explorer(c.VIDEO_DIR))
-        for btn in [self.btn_upload_video, self.btn_replace_video, self.btn_remove_video, self.btn_open_video_folder]:
+        self.btn_choose_video_folder = self._btn("Choose Folder", self.choose_video_folder)
+        self.btn_open_video_folder = self._btn("Open Folder", self.open_video_folder)
+        self.btn_refresh_sources = self._btn("Refresh", self._refresh_lists)
+        for btn in [self.btn_choose_video_folder, self.btn_open_video_folder, self.btn_refresh_sources]:
             source_buttons.addWidget(btn)
-        media_header.addLayout(source_buttons)
-        media_layout.addLayout(media_header)
-
-        slots_grid = QtWidgets.QGridLayout()
-        slots_grid.setHorizontalSpacing(8)
-        slots_grid.setVerticalSpacing(8)
-        self.video_slots = []
-        for idx in range(c.MAX_SOURCE_VIDEOS):
-            slot = VideoSlotBlock(idx)
-            slot.clicked.connect(self._select_video_slot)
-            self.video_slots.append(slot)
-            slots_grid.addWidget(slot, 0, idx)
-        for col in range(c.MAX_SOURCE_VIDEOS):
-            slots_grid.setColumnStretch(col, 1)
-        media_layout.addLayout(slots_grid)
+        folder_layout.addLayout(source_buttons)
+        media_layout.addWidget(folder_box)
         left_layout.addWidget(media_box)
 
         logs_box = QtWidgets.QGroupBox("Activity")
         logs_layout = QtWidgets.QVBoxLayout(logs_box)
         logs_layout.setContentsMargins(14, 18, 14, 14)
+        logs_layout.setSpacing(10)
         self.log_text = QtWidgets.QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(160)
         logs_layout.addWidget(self.log_text)
+        activity_status = QtWidgets.QFrame()
+        activity_status.setObjectName("modeBox")
+        activity_status_layout = QtWidgets.QVBoxLayout(activity_status)
+        activity_status_layout.setContentsMargins(10, 10, 10, 10)
+        activity_status_layout.setSpacing(8)
+        self.status_label = QtWidgets.QLabel("Ready.")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #24163c; font-weight: 700;")
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 100)
+        self.timer_label = QtWidgets.QLabel("Time: --:--")
+        self.timer_label.setStyleSheet("color: #473064; font-weight: 700;")
+        activity_status_layout.addWidget(self.status_label)
+        activity_status_layout.addWidget(self.progress)
+        activity_status_layout.addWidget(self.timer_label)
+        logs_layout.addWidget(activity_status)
         left_layout.addWidget(logs_box, 1)
 
+        right_scroll = QtWidgets.QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setFixedWidth(340)
+        workspace.addWidget(right_scroll)
+
         right_panel = QtWidgets.QWidget()
-        right_panel.setFixedWidth(320)
+        right_panel.setMinimumWidth(320)
+        right_panel.setObjectName("sidePanel")
+        right_scroll.setWidget(right_panel)
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
-        workspace.addWidget(right_panel)
+        right_layout.setSpacing(0)
 
         create_box = QtWidgets.QGroupBox("Create")
+        create_box.setObjectName("createBox")
+        create_box.setMinimumHeight(390)
         create_layout = QtWidgets.QVBoxLayout(create_box)
         create_layout.setContentsMargins(14, 18, 14, 14)
         create_layout.setSpacing(10)
@@ -325,8 +360,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         mode_box = QtWidgets.QFrame()
         mode_box.setObjectName("modeBox")
+        mode_box.setMinimumHeight(150)
         mode_layout = QtWidgets.QVBoxLayout(mode_box)
-        mode_layout.setContentsMargins(10, 10, 10, 10)
+        mode_layout.setContentsMargins(12, 12, 12, 12)
         mode_layout.setSpacing(8)
         mode_title = QtWidgets.QLabel("Creation Mode")
         mode_title.setStyleSheet("color: #24163c; font-size: 12px; font-weight: 800;")
@@ -348,6 +384,7 @@ class MainWindow(QtWidgets.QMainWindow):
         mode_layout.addLayout(batch_row)
         self.mode_summary = QtWidgets.QLabel("")
         self.mode_summary.setWordWrap(True)
+        self.mode_summary.setMinimumHeight(34)
         self.mode_summary.setStyleSheet("color: #5f4a78; font-size: 11px; font-weight: 700;")
         mode_layout.addWidget(self.mode_summary)
         create_layout.addWidget(mode_box)
@@ -364,21 +401,9 @@ class MainWindow(QtWidgets.QMainWindow):
         create_layout.addWidget(self.btn_advanced)
         right_layout.addWidget(create_box)
 
-        status_box = QtWidgets.QGroupBox("Status")
-        status_layout = QtWidgets.QVBoxLayout(status_box)
-        status_layout.setContentsMargins(14, 18, 14, 14)
-        status_layout.setSpacing(10)
-        self.status_label = QtWidgets.QLabel("Ready.")
-        self.status_label.setWordWrap(True)
-        self.progress = QtWidgets.QProgressBar()
-        self.progress.setRange(0, 100)
-        status_layout.addWidget(self.status_label)
-        status_layout.addWidget(self.progress)
-        self.timer_label = QtWidgets.QLabel("Time: --:--")
-        status_layout.addWidget(self.timer_label)
-        right_layout.addWidget(status_box)
-
         output_box = QtWidgets.QGroupBox("Output")
+        output_box.setObjectName("outputBox")
+        output_box.setMinimumHeight(175)
         output_layout = QtWidgets.QVBoxLayout(output_box)
         output_layout.setContentsMargins(14, 18, 14, 14)
         output_layout.setSpacing(8)
@@ -460,7 +485,7 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addAction("Open Project Folder", lambda: open_in_file_explorer(c.BASE_DIR))
         file_menu.addAction("Open Creations Folder", lambda: open_in_file_explorer(c.OUTPUTS_DIR))
         file_menu.addAction("Open Edit Bank", lambda: open_in_file_explorer(c.EDIT_BANK_DIR))
-        file_menu.addAction("Open Source Videos Folder", lambda: open_in_file_explorer(c.VIDEO_DIR))
+        file_menu.addAction("Open Source Videos Folder", self.open_video_folder)
         file_menu.addAction("Open Config Folder", lambda: open_in_file_explorer(c.CONFIG_DIR))
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
@@ -500,8 +525,8 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(
             self,
             "How to Use",
-            "1) Add exactly five gameplay videos.\n"
-            "2) Click a source block, then use Replace Slot or Remove Slot to manage it.\n"
+            "1) Choose a folder with at least five gameplay videos.\n"
+            "2) Each output randomly uses five 5-second clips from five different videos.\n"
             "3) Click Start to create a 25s short, or Preview 5s.\n"
             "4) Songs and SFX are randomly selected from the built-in folders.\n"
             "5) Outputs save to the creations folder.\n"
@@ -542,6 +567,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.batch_count = int(data.get("batch_count", 1))
         self.hw_encode = bool(data.get("hw_encode", False))
         self.auto_create = bool(data.get("auto_create", True))
+        self.video_source_dir = str(data.get("video_source_dir", str(c.VIDEO_DIR)))
+        self.include_video_subfolders = bool(data.get("include_video_subfolders", False))
         self._apply_settings_to_ui()
 
     def _save_settings(self, auto_create: Optional[bool] = None):
@@ -555,6 +582,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "batch_count": self.batch_count,
             "hw_encode": self.hw_encode,
             "auto_create": auto_create,
+            "video_source_dir": self.video_source_dir,
+            "include_video_subfolders": self.include_video_subfolders,
         }
         try:
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -569,6 +598,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_sfx.setValue(self.sfx_volume)
         self.spin_batch.setValue(self.batch_count)
         self.chk_auto.setChecked(self.auto_create)
+        self.chk_include_subfolders.setChecked(self.include_video_subfolders)
         self._update_creation_mode_ui()
 
     def _update_creation_mode_ui(self):
@@ -588,8 +618,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _log(self, text: str):
         at_bottom = self.log_text.verticalScrollBar().value() >= self.log_text.verticalScrollBar().maximum()
+        if self.log_messages and self.log_messages[-1].startswith("Done:") and text:
+            self.log_messages.append("")
         self.log_messages.append(text)
-        self.log_messages = self.log_messages[-12:]
+        self.log_messages = self.log_messages[-18:]
         self.log_text.setPlainText("\n".join(self.log_messages))
         if at_bottom:
             self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
@@ -597,8 +629,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _log_error(self, text: str):
         at_bottom = self.log_text.verticalScrollBar().value() >= self.log_text.verticalScrollBar().maximum()
         entry = f"ERROR: {text}"
+        if self.log_messages and self.log_messages[-1].startswith("Done:"):
+            self.log_messages.append("")
         self.log_messages.append(entry)
-        self.log_messages = self.log_messages[-12:]
+        self.log_messages = self.log_messages[-18:]
         self.log_text.setPlainText("\n".join(self.log_messages))
         if at_bottom:
             self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
@@ -615,78 +649,57 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_counts()
 
     def _update_counts(self):
-        videos = self._trim_video_library(list_files(c.VIDEO_DIR, c.VIDEO_EXTS))
+        source_folder = self._video_source_folder()
+        videos = self._list_source_videos()
         auds = len(list_files(c.AUDIO_DIR, c.AUDIO_EXTS))
         sfxs = len(list_files(c.SFX_DIR, c.AUDIO_EXTS))
 
-        if self.selected_video_slot >= c.MAX_SOURCE_VIDEOS:
-            self.selected_video_slot = 0
-
-        for idx, slot in enumerate(self.video_slots):
-            path = videos[idx] if idx < len(videos) else None
-            thumbnail = None
-            if path is not None:
-                try:
-                    thumbnail = make_video_thumbnail(path, c.THUMB_DIR)
-                except Exception:
-                    thumbnail = None
-            slot.set_video(path, thumbnail, idx == self.selected_video_slot)
-
-        self.video_count_lbl.setText(f"Gameplay videos: {len(videos)}/{c.MAX_SOURCE_VIDEOS}")
+        folder_text = str(source_folder)
+        metrics = QtGui.QFontMetrics(self.video_folder_label.font())
+        label_width = max(320, self.video_folder_label.width())
+        self.video_folder_label.setText(metrics.elidedText(folder_text, QtCore.Qt.TextElideMode.ElideMiddle, label_width))
+        self.video_folder_label.setToolTip(folder_text)
+        scope = "including subfolders" if self.include_video_subfolders else "selected folder only"
+        self.video_count_lbl.setText(f"Source videos: {len(videos)}")
+        self.video_count_lbl.setToolTip(scope)
         self.audio_count_lbl.setText(f"Built-in songs: {auds}")
         self.sfx_count_lbl.setText(f"Built-in SFX: {sfxs}")
         self._update_video_buttons()
 
-    def _trim_video_library(self, videos: List[Path]) -> List[Path]:
-        if len(videos) <= c.MAX_SOURCE_VIDEOS:
-            return videos
+    def _video_source_folder(self) -> Path:
+        folder = Path(self.video_source_dir).expanduser()
+        if not folder.is_absolute():
+            folder = c.BASE_DIR / folder
+        return folder
 
-        keep = videos[: c.MAX_SOURCE_VIDEOS]
-        extras = videos[c.MAX_SOURCE_VIDEOS :]
-        base = c.VIDEO_DIR.resolve()
-        removed = 0
-        for path in extras:
-            try:
-                resolved = path.resolve()
-                if not resolved.is_relative_to(base):
-                    continue
-                path.unlink()
-                removed += 1
-            except Exception as exc:
-                self._log_error(f"Could not remove extra video {path.name}: {exc}")
-        if removed:
-            self._log(f"Removed {removed} extra video file(s); only five source videos are stored.")
-        return keep
-
-    def _select_video_slot(self, slot_index: int):
-        self.selected_video_slot = slot_index
-        self._update_counts()
-
-    def _selected_video_path(self) -> Optional[Path]:
-        if not hasattr(self, "video_slots"):
-            return None
-        if self.selected_video_slot < 0 or self.selected_video_slot >= c.MAX_SOURCE_VIDEOS:
-            return None
-        videos = list_files(c.VIDEO_DIR, c.VIDEO_EXTS)
-        if self.selected_video_slot >= len(videos):
-            return None
-        return videos[self.selected_video_slot]
+    def _list_source_videos(self) -> List[Path]:
+        source_folder = self._video_source_folder()
+        if not source_folder.exists():
+            return []
+        if self.include_video_subfolders:
+            return sorted(
+                p for p in source_folder.rglob("*") if p.is_file() and p.suffix.lower() in c.VIDEO_EXTS
+            )
+        return list_files(source_folder, c.VIDEO_EXTS)
 
     def _update_video_buttons(self):
-        if not hasattr(self, "btn_upload_video"):
+        if not hasattr(self, "btn_choose_video_folder"):
             return
-        videos = self._trim_video_library(list_files(c.VIDEO_DIR, c.VIDEO_EXTS))
+        videos = self._list_source_videos()
         songs = list_files(c.AUDIO_DIR, c.AUDIO_EXTS)
         sfxs = list_files(c.SFX_DIR, c.AUDIO_EXTS)
-        has_selection = self._selected_video_path() is not None
         is_busy = bool((self.worker_thread and self.worker_thread.isRunning()) or self.job_start_time is not None)
-        ready = len(videos) == c.MAX_SOURCE_VIDEOS and bool(songs) and bool(sfxs)
-        self.btn_upload_video.setEnabled((len(videos) < c.MAX_SOURCE_VIDEOS) and not is_busy)
-        self.btn_replace_video.setEnabled(has_selection and not is_busy)
-        self.btn_remove_video.setEnabled(has_selection and not is_busy)
+        ready = len(videos) >= c.MAX_SOURCE_VIDEOS and bool(songs) and bool(sfxs)
+        self.btn_choose_video_folder.setEnabled(not is_busy)
         self.btn_open_video_folder.setEnabled(not is_busy)
+        self.btn_refresh_sources.setEnabled(not is_busy)
         self.btn_start.setEnabled(ready and not is_busy)
         self.btn_preview.setEnabled(ready and not is_busy)
+
+    def _on_include_subfolders_changed(self):
+        self.include_video_subfolders = self.chk_include_subfolders.isChecked()
+        self._save_settings()
+        self._refresh_lists()
 
     def _tick_timer(self):
         if self.worker_thread and self.worker_thread.isRunning() and self.job_start_time:
@@ -705,91 +718,33 @@ class MainWindow(QtWidgets.QMainWindow):
         secs = total % 60
         return f"{mins:02d}:{secs:02d}"
 
-    def upload_videos(self):
-        existing = self._trim_video_library(list_files(c.VIDEO_DIR, c.VIDEO_EXTS))
-        remaining = c.MAX_SOURCE_VIDEOS - len(existing)
-        if remaining <= 0:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Five Videos Already Added",
-                "Remove or replace a gameplay video before adding another one.",
-            )
-            return
-
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(self, "Select gameplay video file(s)")
-        if not paths:
-            return
-        copied = 0
-        skipped = 0
-        for s in paths[:remaining]:
-            src = Path(s)
-            ok, msg = self._validate_source_video(src)
-            if ok:
-                safe_copy_into_library(src, c.VIDEO_DIR)
-                copied += 1
-            else:
-                skipped += 1
-                self._log_error(f"{src.name}: {msg}")
-        if len(paths) > remaining:
-            skipped += len(paths) - remaining
-            self._log_error(f"Only {remaining} slot(s) were available.")
-        self._refresh_lists()
-        self._log(f"Added {copied} gameplay video(s).")
-        if skipped:
-            self._log_error(f"Skipped {skipped} video file(s).")
-        if copied:
-            self.selected_video_slot = min(len(existing) + copied - 1, c.MAX_SOURCE_VIDEOS - 1)
-            self._refresh_lists()
-
-    def replace_selected_video(self):
-        selected = self._selected_video_path()
-        if not selected:
-            return
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select replacement gameplay video")
-        if not path:
-            return
-        src = Path(path)
-        if src.resolve() == selected.resolve():
-            self._log("Selected replacement is already in that slot.")
-            return
-
-        ok, msg = self._validate_source_video(src)
-        if not ok:
-            self._log_error(f"{src.name}: {msg}")
-            QtWidgets.QMessageBox.critical(self, "Invalid Video", msg)
-            return
-
-        new_path = safe_copy_into_library(src, c.VIDEO_DIR)
-        try:
-            selected.unlink()
-        except Exception as exc:
-            try:
-                new_path.unlink()
-            except Exception:
-                pass
-            self._log_error(f"Could not remove old video: {exc}")
-            QtWidgets.QMessageBox.critical(self, "Replace Failed", f"Could not remove old video: {exc}")
-            self._refresh_lists()
-            return
-        self._refresh_lists()
-        self._log(f"Replaced {selected.name} with {new_path.name}.")
-
-    def remove_selected_video(self):
-        selected = self._selected_video_path()
-        if not selected:
-            return
-        if QtWidgets.QMessageBox.question(
+    def choose_video_folder(self):
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Remove Video",
-            f"Remove {selected.name} from the five gameplay sources?",
-        ) != QtWidgets.QMessageBox.StandardButton.Yes:
+            "Choose gameplay video folder",
+            str(self._video_source_folder()),
+        )
+        if not folder:
             return
-        try:
-            selected.unlink()
-            self._log(f"Removed {selected.name}.")
-        except Exception as exc:
-            self._log_error(f"Could not remove video: {exc}")
+        self.video_source_dir = folder
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Include Subfolders?",
+            "Use videos inside subfolders too?",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        self.include_video_subfolders = reply == QtWidgets.QMessageBox.StandardButton.Yes
+        self.chk_include_subfolders.setChecked(self.include_video_subfolders)
+        self._save_settings()
         self._refresh_lists()
+        scope = "including subfolders" if self.include_video_subfolders else "selected folder only"
+        self._log(f"Video source folder: {folder} ({scope}).")
+
+    def open_video_folder(self):
+        folder = self._video_source_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        open_in_file_explorer(folder)
 
     def _validate_source_video(self, src: Path) -> Tuple[bool, str]:
         ok, msg = security.validate_media_file(src, "video", max_size_mb=65536)
@@ -802,11 +757,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if duration is None:
             return False, "Could not read video duration."
         if duration < c.MIN_SOURCE_SECONDS:
-            return False, "Gameplay videos must be at least 5 minutes long."
+            return False, "Gameplay videos must be at least 5 seconds long."
         return True, "OK"
 
     def _collect_selections(self) -> Tuple[List[Path], List[Path], List[Path]]:
-        all_vids = self._trim_video_library(list_files(c.VIDEO_DIR, c.VIDEO_EXTS))
+        all_vids = self._list_source_videos()
         all_auds = list_files(c.AUDIO_DIR, c.AUDIO_EXTS)
         all_sfxs = list_files(c.SFX_DIR, c.AUDIO_EXTS)
         return all_vids, all_auds, all_sfxs
@@ -832,11 +787,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_settings(auto_create=requested_auto_create)
 
         vids, songs, sfxs = self._collect_selections()
-        if len(vids) != c.MAX_SOURCE_VIDEOS:
+        if len(vids) < c.MAX_SOURCE_VIDEOS:
             QtWidgets.QMessageBox.critical(
                 self,
-                "Five Videos Required",
-                f"Add exactly {c.MAX_SOURCE_VIDEOS} gameplay videos before creating a mashup.",
+                "Not Enough Source Videos",
+                f"Choose a folder with at least {c.MAX_SOURCE_VIDEOS} gameplay videos. "
+                "Each output uses five different videos.",
             )
             return
         if not songs or not sfxs:
@@ -879,6 +835,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.last_job_info = {
             "videos_selected": len(vids),
+            "video_source_folder": str(self._video_source_folder()),
             "song_pool": len(songs),
             "sfx_count": len(sfxs),
             "render_preset": self.render_speed,
@@ -899,10 +856,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_button_state(self.btn_pause, True)
         self._set_button_state(self.btn_cancel, True)
         self._set_button_state(self.btn_resume, False)
-        self._set_button_state(self.btn_upload_video, False)
-        self._set_button_state(self.btn_replace_video, False)
-        self._set_button_state(self.btn_remove_video, False)
+        self._set_button_state(self.btn_choose_video_folder, False)
         self._set_button_state(self.btn_open_video_folder, False)
+        self._set_button_state(self.btn_refresh_sources, False)
 
         self.job_start_time = time.monotonic()
         self.render_start_time = None
