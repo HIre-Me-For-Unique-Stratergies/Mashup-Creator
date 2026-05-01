@@ -22,7 +22,6 @@ def _assets_dir() -> Path:
 
 BASE_DIR = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
-THUMB_DIR = CONFIG_DIR / "thumbnails"
 ASSETS_DIR = _assets_dir()
 ICON_ICO_PATH = ASSETS_DIR / "icon.ico"
 ICON_PATH = ASSETS_DIR / "icon.png"
@@ -40,4 +39,4 @@ AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
 MAX_SOURCE_VIDEOS = 5
 MIN_SOURCE_SECONDS = 5
 
-DIRS = [CONFIG_DIR, THUMB_DIR, VIDEO_DIR, AUDIO_DIR, SFX_DIR, OUTPUTS_DIR, EDIT_BANK_DIR]
+DIRS = [CONFIG_DIR, VIDEO_DIR, AUDIO_DIR, SFX_DIR, OUTPUTS_DIR, EDIT_BANK_DIR]

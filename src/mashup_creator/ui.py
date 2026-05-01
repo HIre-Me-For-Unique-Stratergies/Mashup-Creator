@@ -10,87 +10,10 @@ from typing import List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from . import security
 from . import constants as c
 from .creator import CreationJob
 from .worker import RenderWorker
-from .utils import list_files, probe_duration, open_in_file_explorer
-
-
-class VideoSlotBlock(QtWidgets.QFrame):
-    clicked = QtCore.pyqtSignal(int)
-
-    def __init__(self, slot_index: int):
-        super().__init__()
-        self.slot_index = slot_index
-        self.path: Optional[Path] = None
-        self.setObjectName("videoSlot")
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.setMinimumSize(132, 150)
-        self.setMaximumHeight(164)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        self.title_label = QtWidgets.QLabel(f"Slot {slot_index + 1}")
-        self.title_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.title_label.setStyleSheet("color: #24163c; font-weight: 800;")
-        layout.addWidget(self.title_label)
-
-        self.thumbnail_label = QtWidgets.QLabel("Empty")
-        self.thumbnail_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.thumbnail_label.setFixedHeight(74)
-        self.thumbnail_label.setMinimumWidth(112)
-        self.thumbnail_label.setStyleSheet(
-            "background: #24163c; color: #ffffff; border-radius: 6px; font-weight: 800;"
-        )
-        layout.addWidget(self.thumbnail_label)
-
-        self.name_label = QtWidgets.QLabel("No video")
-        self.name_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.name_label.setFixedHeight(30)
-        self.name_label.setStyleSheet("color: #473064; font-size: 10px; font-weight: 700;")
-        layout.addWidget(self.name_label)
-
-        self.set_selected(False)
-
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.slot_index)
-        super().mousePressEvent(event)
-
-    def set_video(self, path: Optional[Path], thumbnail_path: Optional[Path], selected: bool) -> None:
-        self.path = path
-        if path is None:
-            self.thumbnail_label.setPixmap(QtGui.QPixmap())
-            self.thumbnail_label.setText("Empty")
-            self.name_label.setText("No video")
-            self.setToolTip("")
-        else:
-            pixmap = QtGui.QPixmap(str(thumbnail_path)) if thumbnail_path else QtGui.QPixmap()
-            if pixmap.isNull():
-                self.thumbnail_label.setPixmap(QtGui.QPixmap())
-                self.thumbnail_label.setText("Preview unavailable")
-            else:
-                scaled = pixmap.scaled(
-                    self.thumbnail_label.size(),
-                    QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    QtCore.Qt.TransformationMode.SmoothTransformation,
-                )
-                self.thumbnail_label.setText("")
-                self.thumbnail_label.setPixmap(scaled)
-            metrics = QtGui.QFontMetrics(self.name_label.font())
-            self.name_label.setText(metrics.elidedText(path.name, QtCore.Qt.TextElideMode.ElideMiddle, 112))
-            self.setToolTip(str(path))
-        self.set_selected(selected)
-
-    def set_selected(self, selected: bool) -> None:
-        border = "#7b4dff" if selected else "#e0d5ff"
-        background = "#f7f1ff" if selected else "#ffffff"
-        self.setStyleSheet(
-            f"QFrame#videoSlot {{ background: {background}; border: 2px solid {border}; border-radius: 8px; }}"
-        )
+from .utils import list_files, open_in_file_explorer
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -745,20 +668,6 @@ class MainWindow(QtWidgets.QMainWindow):
         folder = self._video_source_folder()
         folder.mkdir(parents=True, exist_ok=True)
         open_in_file_explorer(folder)
-
-    def _validate_source_video(self, src: Path) -> Tuple[bool, str]:
-        ok, msg = security.validate_media_file(src, "video", max_size_mb=65536)
-        if not ok:
-            return False, msg
-        try:
-            duration = probe_duration(src)
-        except Exception as exc:
-            return False, f"Could not read video duration: {exc}"
-        if duration is None:
-            return False, "Could not read video duration."
-        if duration < c.MIN_SOURCE_SECONDS:
-            return False, "Gameplay videos must be at least 5 seconds long."
-        return True, "OK"
 
     def _collect_selections(self) -> Tuple[List[Path], List[Path], List[Path]]:
         all_vids = self._list_source_videos()

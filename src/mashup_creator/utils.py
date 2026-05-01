@@ -1,12 +1,10 @@
 import json
-import hashlib
 import os
 import random
 import re
 import shutil
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -17,69 +15,6 @@ _STREAM_RE = re.compile(r"^\s*Stream #\S+.*?:\s*(Video|Audio|Subtitle|Data):", r
 
 def list_files(folder: Path, exts: set) -> List[Path]:
     return sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts])
-
-
-def safe_copy_into_library(src: Path, dest_folder: Path) -> Path:
-    dest_folder.mkdir(parents=True, exist_ok=True)
-    dest = dest_folder / src.name
-    if dest.exists():
-        stem = src.stem
-        ext = src.suffix
-        dest = dest_folder / f"{stem}_{uuid.uuid4().hex[:6]}{ext}"
-    shutil.copy2(src, dest)
-    return dest
-
-
-def make_video_thumbnail(src: Path, cache_folder: Path, width: int = 320, height: int = 180) -> Optional[Path]:
-    ffmpeg = ffmpeg_tool("ffmpeg")
-    if not ffmpeg:
-        return None
-
-    try:
-        stat = src.stat()
-    except OSError:
-        return None
-
-    cache_folder.mkdir(parents=True, exist_ok=True)
-    key_src = f"{src.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
-    key = hashlib.sha1(key_src.encode("utf-8", errors="replace")).hexdigest()[:16]
-    out_file = cache_folder / f"{key}.jpg"
-    if out_file.exists() and out_file.stat().st_size > 0:
-        return out_file
-
-    result = subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            "1",
-            "-i",
-            str(src),
-            "-frames:v",
-            "1",
-            "-vf",
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}",
-            "-q:v",
-            "4",
-            str(out_file),
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    if result.returncode != 0 or not out_file.exists() or out_file.stat().st_size <= 0:
-        try:
-            if out_file.exists():
-                out_file.unlink()
-        except OSError:
-            pass
-        return None
-    return out_file
 
 
 def open_in_file_explorer(path: Path) -> None:
@@ -98,43 +33,6 @@ def random_start(duration: float, clip_len: float) -> float:
     if duration <= clip_len:
         return 0.0
     return random.uniform(0.0, duration - clip_len)
-
-
-def fit_to_vertical(clip, target_w: int = 1080, target_h: int = 1920):
-    from moviepy.video.fx.Resize import Resize
-    from moviepy.video.fx.Crop import Crop
-
-    scale = max(target_w / clip.w, target_h / clip.h)
-    resized = clip.with_effects([Resize(scale)])
-    return resized.with_effects(
-        [Crop(x_center=resized.w / 2, y_center=resized.h / 2, width=target_w, height=target_h)]
-    )
-
-
-def add_epic_motion(clip, target_w: int, target_h: int, segment_len: float = 5.0, max_zoom: float = 0.08):
-    from moviepy import concatenate_videoclips
-    from moviepy.video.fx.Resize import Resize
-    from moviepy.video.fx.Crop import Crop
-
-    if clip.duration is None or clip.duration <= 0:
-        return clip
-    segments = []
-    t = 0.0
-    while t < clip.duration - 0.01:
-        end = min(t + segment_len, clip.duration)
-        seg = clip.subclipped(t, end)
-        scale = 1.02 + random.random() * max_zoom
-        zoomed = seg.with_effects([Resize(scale)])
-        max_dx = max(0.0, (zoomed.w - target_w) / 2)
-        max_dy = max(0.0, (zoomed.h - target_h) / 2)
-        dx = random.uniform(-max_dx, max_dx) if max_dx > 1 else 0.0
-        dy = random.uniform(-max_dy, max_dy) if max_dy > 1 else 0.0
-        zoomed = zoomed.with_effects(
-            [Crop(x_center=zoomed.w / 2 + dx, y_center=zoomed.h / 2 + dy, width=target_w, height=target_h)]
-        )
-        segments.append(zoomed)
-        t = end
-    return concatenate_videoclips(segments, method="compose")
 
 
 def _tool_names(name: str) -> List[str]:
